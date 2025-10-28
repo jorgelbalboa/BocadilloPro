@@ -43,32 +43,9 @@ const PresupuestoForm: React.FC<{
     const [nombreCliente, setNombreCliente] = useState(initialData?.nombreCliente || '');
     const [fechaVencimiento, setFechaVencimiento] = useState(initialData?.fechaVencimiento || '');
     const [detallesServicio, setDetallesServicio] = useState(initialData?.detallesServicio || empresaInfo?.detallesServicio || '');
-    const [items, setItems] = useState<PresupuestoItem[]>(initialData?.items || []);
     const [bocadilloToAdd, setBocadilloToAdd] = useState('');
 
     const bocadillosMap = useMemo(() => new Map(bocadillos.map(b => [b.id, b])), [bocadillos]);
-
-    const availableBocadillos = useMemo(() => {
-        const selectedIds = new Set(items.map(i => i.bocadilloId));
-        return bocadillos.filter(b => !selectedIds.has(b.id)).sort((a, b) => a.nombre.localeCompare(b.nombre));
-    }, [bocadillos, items]);
-
-    const handleAddItemToList = () => {
-        if (!bocadilloToAdd) return;
-        const bocadillo = bocadillosMap.get(bocadilloToAdd);
-        if (bocadillo) {
-            setItems([...items, {
-                bocadilloId: bocadillo.id,
-                cantidad: 1,
-                precioUnitario: bocadillo.precioVenta
-            }]);
-            setBocadilloToAdd(''); // Reset dropdown
-        }
-    };
-
-    const handleRemoveItem = (bocadilloId: string) => {
-        setItems(items.filter(i => i.bocadilloId !== bocadilloId));
-    };
 
     const calculateCostoUnitario = (bocadillo: Bocadillo): number => {
         const costoTotalReceta = bocadillo.insumos.reduce((acc, item) => {
@@ -87,49 +64,99 @@ const PresupuestoForm: React.FC<{
         return ((precioVenta / costo) - 1) * 100;
     };
 
-    const handleItemCantidadChange = (bocadilloId: string, cantidad: number) => {
-       if (cantidad > 0) {
-            setItems(items.map(i => i.bocadilloId === bocadilloId ? { ...i, cantidad } : i));
-        } else {
-            handleRemoveItem(bocadilloId);
+    const [formItems, setFormItems] = useState(() => {
+        return (initialData?.items || []).map(item => {
+            const bocadillo = bocadillos.find(b => b.id === item.bocadilloId);
+            if (!bocadillo) return null;
+
+            const costoUnitario = calculateCostoUnitario(bocadillo);
+            const profitPercentage = getProfitPercentage(item.precioUnitario, costoUnitario);
+
+            return {
+                bocadilloId: item.bocadilloId,
+                cantidad: item.cantidad,
+                precioUnitario: item.precioUnitario,
+                cantidadStr: item.cantidad.toString(),
+                profitStr: profitPercentage.toFixed(2)
+            };
+        }).filter(Boolean) as (PresupuestoItem & { cantidadStr: string, profitStr: string })[];
+    });
+
+    const availableBocadillos = useMemo(() => {
+        const selectedIds = new Set(formItems.map(i => i.bocadilloId));
+        return bocadillos.filter(b => !selectedIds.has(b.id)).sort((a, b) => a.nombre.localeCompare(b.nombre));
+    }, [bocadillos, formItems]);
+
+    const handleAddItemToList = () => {
+        if (!bocadilloToAdd) return;
+        const bocadillo = bocadillosMap.get(bocadilloToAdd);
+        if (bocadillo) {
+            setFormItems(prev => [...prev, {
+                bocadilloId: bocadillo.id,
+                cantidad: 1,
+                precioUnitario: bocadillo.precioVenta,
+                cantidadStr: '1',
+                profitStr: bocadillo.porcentajeGanancia.toFixed(2)
+            }]);
+            setBocadilloToAdd('');
         }
     };
 
-    const handleItemProfitChange = (bocadilloId: string, newPercentageStr: string) => {
-        const bocadillo = bocadillosMap.get(bocadilloId);
-        if (!bocadillo) return;
-        
-        const newPercentage = parseFloat(newPercentageStr);
-        const costoUnitario = calculateCostoUnitario(bocadillo);
-        
-        if (!isNaN(newPercentage)) {
-            const newPrecio = costoUnitario * (1 + newPercentage / 100);
-            setItems(items.map(i => i.bocadilloId === bocadilloId ? { ...i, precioUnitario: newPrecio } : i));
-        } else {
-             // If input is cleared, revert to original price
-             setItems(items.map(i => i.bocadilloId === bocadilloId ? { ...i, precioUnitario: bocadillo.precioVenta } : i));
-        }
+    const handleRemoveItem = (bocadilloId: string) => {
+        setFormItems(prev => prev.filter(i => i.bocadilloId !== bocadilloId));
+    };
+    
+    const handleItemChange = (bocadilloId: string, field: 'cantidadStr' | 'profitStr', value: string) => {
+        setFormItems(prevItems => prevItems.map(item => {
+            if (item.bocadilloId !== bocadilloId) {
+                return item;
+            }
+
+            const updatedItem = { ...item, [field]: value };
+
+            if (field === 'cantidadStr') {
+                const newCantidad = parseInt(value, 10);
+                updatedItem.cantidad = isNaN(newCantidad) ? 0 : (newCantidad >= 0 ? newCantidad : 0);
+            } else if (field === 'profitStr') {
+                const bocadillo = bocadillosMap.get(bocadilloId);
+                if (bocadillo) {
+                    const newProfit = parseFloat(value);
+                    const costoUnitario = calculateCostoUnitario(bocadillo);
+                    if (!isNaN(newProfit)) {
+                        updatedItem.precioUnitario = costoUnitario * (1 + newProfit / 100);
+                    }
+                }
+            }
+            return updatedItem;
+        }));
     };
 
     const costoTotalPresupuesto = useMemo(() => {
-        return items.reduce((acc, item) => {
+        return formItems.reduce((acc, item) => {
             const bocadillo = bocadillosMap.get(item.bocadilloId);
             if (!bocadillo) return acc;
             const costoUnitario = calculateCostoUnitario(bocadillo);
             return acc + (costoUnitario * item.cantidad);
         }, 0);
-    }, [items, bocadillosMap]);
-
+    }, [formItems, bocadillosMap]);
 
     const precioVentaTotal = useMemo(() => {
-        return items.reduce((acc, item) => acc + (item.precioUnitario * item.cantidad), 0);
-    }, [items]);
+        return formItems.reduce((acc, item) => acc + (item.precioUnitario * item.cantidad), 0);
+    }, [formItems]);
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
+        const finalItems = formItems
+            .map(({ bocadilloId, cantidad, precioUnitario }) => ({
+                bocadilloId,
+                cantidad,
+                precioUnitario
+            }))
+            .filter(item => item.cantidad > 0);
+
         onSubmit({
             nombreCliente,
-            items,
+            items: finalItems,
             total: precioVentaTotal,
             fechaVencimiento,
             detallesServicio,
@@ -156,35 +183,32 @@ const PresupuestoForm: React.FC<{
                     </Button>
                 </div>
                 <div className="space-y-3">
-                    {items.length === 0 && (
+                    {formItems.length === 0 && (
                          <p className="text-sm text-slate-500 dark:text-slate-400 text-center py-4 bg-slate-50 dark:bg-slate-700/50 rounded-md">Añade bocadillos a la cotización.</p>
                     )}
-                    {items.map(item => {
+                    {formItems.map(item => {
                         const bocadillo = bocadillosMap.get(item.bocadilloId);
                         if (!bocadillo) return null;
-
-                        const costoUnitario = calculateCostoUnitario(bocadillo);
-                        const currentProfitPerc = getProfitPercentage(item.precioUnitario, costoUnitario);
 
                         return (
                             <div key={item.bocadilloId} className="grid grid-cols-12 gap-2 items-center">
                                 <span className="text-sm truncate col-span-11 sm:col-span-4">{bocadillo.nombre}</span>
                                 <input
                                     type="number"
-                                    min="1"
+                                    min="0"
                                     step="1"
-                                    value={item.cantidad}
+                                    value={item.cantidadStr}
                                     placeholder="Cant."
-                                    onChange={e => handleItemCantidadChange(item.bocadilloId, parseInt(e.target.value) || 0)}
+                                    onChange={e => handleItemChange(item.bocadilloId, 'cantidadStr', e.target.value)}
                                     className="input-style w-full col-span-5 sm:col-span-3"
                                 />
                                 <div className="relative col-span-6 sm:col-span-4">
                                     <input
                                         type="number"
                                         step="any"
-                                        value={currentProfitPerc.toFixed(2)}
+                                        value={item.profitStr}
                                         placeholder="Ganancia %"
-                                        onChange={e => handleItemProfitChange(item.bocadilloId, e.target.value)}
+                                        onChange={e => handleItemChange(item.bocadilloId, 'profitStr', e.target.value)}
                                         className="input-style w-full pl-2 pr-6"
                                     />
                                     <span className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none text-slate-400 text-sm">%</span>
@@ -226,7 +250,7 @@ const PresupuestoForm: React.FC<{
                 </div>
             </div>
             <div className="flex justify-end pt-4">
-                <Button type="submit" disabled={items.length === 0}>{initialData ? 'Actualizar' : 'Crear'} Presupuesto</Button>
+                <Button type="submit" disabled={formItems.length === 0}>{initialData ? 'Actualizar' : 'Crear'} Presupuesto</Button>
             </div>
         </form>
     );
